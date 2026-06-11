@@ -1,18 +1,23 @@
 import requests
 import json
 import os
-from datetime import datetime
-from pathlib import Path
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
+import psycopg2
+from psycopg2.extras import Json
 
 load_dotenv()
 
 ORTEX_API_KEY = os.getenv("ORTEX_API_KEY")
 ORTEX_API_URL = "https://api.ortex.com/api/v1/market_intelligence/content"
-INSIGHTS_FILE = "insights.json"
+DATABASE_URL = os.getenv("DATABASE_URL")
+POLL_INTERVAL_MINUTES = int(os.getenv("POLL_INTERVAL_MINUTES", "15"))
 
 if not ORTEX_API_KEY:
     raise ValueError("ORTEX_API_KEY not found in .env file")
+
+if not DATABASE_URL:
+    raise ValueError("DATABASE_URL not found in .env file")
 
 # Default query parameters - customize as needed
 DEFAULT_PARAMS = {
@@ -23,13 +28,50 @@ DEFAULT_PARAMS = {
 }
 
 
+def init_db():
+    """Initialize PostgreSQL database schema."""
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+
+        # Create insights table
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS insights (
+                id INTEGER PRIMARY KEY,
+                content_type VARCHAR(50),
+                ticker VARCHAR(20),
+                exchange VARCHAR(20),
+                published_at TIMESTAMP,
+                headline TEXT,
+                body TEXT,
+                severity VARCHAR(20),
+                theme VARCHAR(50),
+                topics TEXT[],
+                data JSONB,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+
+        # Create index on published_at for faster queries
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_published_at ON insights(published_at DESC);
+        """)
+
+        conn.commit()
+        cur.close()
+        conn.close()
+        print("Database initialized successfully")
+    except Exception as e:
+        print(f"Error initializing database: {e}")
+        raise
+
+
 def fetch_ortex_insights(params=None):
     """Fetch insights from Ortex API.
 
     Args:
         params: Dict of query parameters to filter results.
-               Supports: content_type, exchange, include, page, page_size,
-                        pulse_type, q, severity, theme, ticker, topics
     """
     try:
         query_params = DEFAULT_PARAMS.copy()
@@ -103,28 +145,72 @@ def enrich_insights(insights, max_details=20):
     return insights
 
 
-def save_insights(insights):
-    """Save insights to file with timestamp."""
+def save_to_db(insights):
+    """Save insights to PostgreSQL database."""
     if not insights:
         return
 
-    data = {
-        "timestamp": datetime.utcnow().isoformat(),
-        "insights": insights
-    }
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
 
-    # Append to existing file or create new
-    all_insights = []
-    if Path(INSIGHTS_FILE).exists():
-        with open(INSIGHTS_FILE, "r") as f:
-            all_insights = json.load(f)
+        # Extract rows from API response
+        if isinstance(insights, list):
+            insight_list = insights
+        elif isinstance(insights, dict):
+            insight_list = insights.get("rows", insights.get("data", []))
+        else:
+            insight_list = []
 
-    all_insights.append(data)
+        inserted_count = 0
+        updated_count = 0
 
-    with open(INSIGHTS_FILE, "w") as f:
-        json.dump(all_insights, f, indent=2)
+        for insight in insight_list:
+            insight_id = insight.get("id")
+            content_type = insight.get("contentType")
+            ticker = insight.get("ticker")
+            exchange = insight.get("exchange")
+            published_at = insight.get("publishedAt")
+            topics = insight.get("topics", [])
 
-    print(f"Saved insights at {data['timestamp']}")
+            # Detail fields
+            detail = insight.get("detail", {})
+            headline = detail.get("headline")
+            body = detail.get("body")
+            severity = detail.get("severity")
+            theme = detail.get("theme")
+
+            try:
+                # Insert or update insight
+                cur.execute("""
+                    INSERT INTO insights (
+                        id, content_type, ticker, exchange, published_at,
+                        headline, body, severity, theme, topics, data
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (id) DO UPDATE SET
+                        updated_at = CURRENT_TIMESTAMP,
+                        data = EXCLUDED.data;
+                """, (
+                    insight_id, content_type, ticker, exchange, published_at,
+                    headline, body, severity, theme, topics, Json(insight)
+                ))
+
+                if cur.rowcount > 0:
+                    inserted_count += 1
+                else:
+                    updated_count += 1
+
+            except Exception as e:
+                print(f"Error saving insight {insight_id}: {e}")
+
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        print(f"Saved to database: {inserted_count} new, {updated_count} updated")
+
+    except Exception as e:
+        print(f"Error saving insights to database: {e}")
 
 
 def main(custom_params=None):
@@ -133,11 +219,19 @@ def main(custom_params=None):
     Args:
         custom_params: Optional dict of query parameters to override defaults.
     """
-    print(f"Fetching Ortex insights at {datetime.utcnow().isoformat()}")
+    print(f"Starting Ortex insights fetch at {datetime.utcnow().isoformat()}")
+    print(f"Poll interval: {POLL_INTERVAL_MINUTES} minutes")
+
+    # Initialize database
+    init_db()
+
+    # Fetch insights
     insights = fetch_ortex_insights(custom_params)
     if insights:
+        print(f"Fetched insights successfully")
         enriched = enrich_insights(insights, max_details=20)
-        save_insights(enriched)
+        save_to_db(enriched)
+        print(f"Complete! Insights saved to PostgreSQL database")
     else:
         print("No insights fetched")
 

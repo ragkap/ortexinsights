@@ -1,39 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
-import fs from 'fs';
-import path from 'path';
+import { Pool } from 'pg';
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+});
 
 export async function GET(request: NextRequest) {
   try {
     const searchParams = request.nextUrl.searchParams;
 
-    // Read insights from the JSON file
-    const insightsPath = path.join(process.cwd(), '..', 'insights.json');
-
-    if (!fs.existsSync(insightsPath)) {
-      return NextResponse.json(
-        { insights: [], message: 'No insights data found. Run the Python backend first.' },
-        { status: 200 }
-      );
-    }
-
-    const fileContent = fs.readFileSync(insightsPath, 'utf-8');
-    const allData = JSON.parse(fileContent);
-
-    // Get the latest insights (last entry in the array)
-    const latestData = allData[allData.length - 1];
-    let insightsResponse = latestData?.insights || {};
-
-    // Extract the array from response structure
-    let insights = [];
-    if (Array.isArray(insightsResponse)) {
-      insights = insightsResponse;
-    } else if (insightsResponse.rows) {
-      insights = insightsResponse.rows;
-    } else if (insightsResponse.data) {
-      insights = insightsResponse.data;
-    }
-
-    // Apply filters
+    // Get filter parameters
     const contentType = searchParams.get('content_type');
     const ticker = searchParams.get('ticker');
     const severity = searchParams.get('severity');
@@ -42,76 +18,98 @@ export async function GET(request: NextRequest) {
     const exchange = searchParams.get('exchange');
     const pageSize = parseInt(searchParams.get('page_size') || '50');
 
-    let filtered = insights.filter((insight: any) => {
-      // Content Type - can be multiple (comma-separated)
-      if (contentType) {
-        const contentTypes = contentType.split(',').map((t) => t.trim().toLowerCase());
-        const insightType = (insight.contentType || '').toLowerCase();
-        if (!contentTypes.includes(insightType)) {
-          return false;
-        }
-      }
+    // Build SQL query
+    let query = 'SELECT * FROM insights WHERE 1=1';
+    const params: any[] = [];
+    let paramCount = 1;
 
-      // Ticker
-      if (ticker) {
-        const insightTicker = (insight.ticker || '').toLowerCase();
-        const searchTicker = ticker.toLowerCase();
-        if (!insightTicker.includes(searchTicker)) {
-          return false;
-        }
-      }
+    // Content Type filter (can be multiple)
+    if (contentType) {
+      const types = contentType.split(',').map((t) => t.trim());
+      query += ` AND content_type = ANY($${paramCount})`;
+      params.push(types);
+      paramCount++;
+    }
 
-      // Severity - only filter if it has a value
-      if (
-        severity &&
-        insight.severity?.toLowerCase() !== severity.toLowerCase()
-      ) {
-        return false;
-      }
+    // Ticker filter
+    if (ticker) {
+      query += ` AND ticker ILIKE $${paramCount}`;
+      params.push(`%${ticker}%`);
+      paramCount++;
+    }
 
-      // Theme - can be multiple (comma-separated)
-      if (theme) {
-        const themes = theme.split(',').map((t) => t.trim().toLowerCase());
-        const detailTheme = (insight.detail?.theme || insight.theme || '').toLowerCase();
-        if (!themes.includes(detailTheme)) {
-          return false;
-        }
-      }
+    // Exchange filter
+    if (exchange) {
+      query += ` AND exchange ILIKE $${paramCount}`;
+      params.push(`%${exchange}%`);
+      paramCount++;
+    }
 
-      // Exchange
-      if (exchange) {
-        const insightEx = (insight.exchange || '').toLowerCase();
-        const searchEx = exchange.toLowerCase();
-        if (!insightEx.includes(searchEx)) {
-          return false;
-        }
-      }
+    // Severity filter
+    if (severity) {
+      query += ` AND severity = $${paramCount}`;
+      params.push(severity.toLowerCase());
+      paramCount++;
+    }
 
-      // Topics - can be multiple (comma-separated)
-      if (topics) {
-        const topicList = topics.split(',').map((t) => t.trim().toLowerCase());
-        const insightTopics = (insight.topics || []).map((t: string) =>
-          t.toLowerCase()
-        );
-        const hasMatch = topicList.some((t) =>
-          insightTopics.some((it: string) => it.includes(t) || t.includes(it))
-        );
-        if (!hasMatch && topicList.length > 0) {
-          return false;
-        }
-      }
+    // Theme filter (can be multiple)
+    if (theme) {
+      const themes = theme.split(',').map((t) => t.trim());
+      query += ` AND theme = ANY($${paramCount})`;
+      params.push(themes);
+      paramCount++;
+    }
 
-      return true;
-    });
+    // Topics filter (can be multiple)
+    if (topics) {
+      const topicList = topics.split(',').map((t) => t.trim());
+      query += ` AND topics && $${paramCount}`;
+      params.push(topicList);
+      paramCount++;
+    }
 
-    // Paginate results
-    filtered = filtered.slice(0, pageSize);
+    // Sort by published date descending
+    query += ` ORDER BY published_at DESC`;
 
-    return NextResponse.json({ insights: filtered });
+    // Limit
+    query += ` LIMIT $${paramCount}`;
+    params.push(pageSize);
+
+    // Execute query
+    const result = await pool.query(query, params);
+
+    // Transform database results to API format
+    const insights = result.rows.map((row) => ({
+      id: row.id,
+      contentType: row.content_type,
+      ticker: row.ticker,
+      exchange: row.exchange,
+      publishedAt: row.published_at,
+      headline: row.headline,
+      body: row.body,
+      severity: row.severity,
+      theme: row.theme,
+      topics: row.topics,
+      detail: {
+        id: row.id,
+        contentType: row.content_type,
+        ticker: row.ticker,
+        exchange: row.exchange,
+        headline: row.headline,
+        body: row.body,
+        severity: row.severity,
+        theme: row.theme,
+        publishedAt: row.published_at,
+        topics: row.topics,
+        ...row.data?.detail,
+      },
+    }));
+
+    return NextResponse.json({ insights });
   } catch (error) {
     console.error('Error fetching insights:', error);
     return NextResponse.json(
-      { error: 'Failed to fetch insights' },
+      { error: 'Failed to fetch insights', message: error instanceof Error ? error.message : 'Unknown error' },
       { status: 500 }
     );
   }

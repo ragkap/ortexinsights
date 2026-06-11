@@ -6,8 +6,9 @@
   "scripts": {
     "start": "cd frontend && npm start",
     "dev": "cd frontend && npm run dev",
-    "build": "cd frontend && npm run build",
-    "backend": "python main.py"
+    "build": "cd frontend && npm install && npm run build",
+    "backend": "python main.py",
+    "postinstall": "cd frontend && npm install"
   },
   "keywords": ["ortex", "insights", "market"],
   "author": "Raghav Kapoor",

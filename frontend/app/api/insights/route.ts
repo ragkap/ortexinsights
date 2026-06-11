@@ -1,12 +1,23 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { Pool } from 'pg';
 
+if (!process.env.DATABASE_URL) {
+  console.error('DATABASE_URL environment variable is not set');
+}
+
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString: process.env.DATABASE_URL || '',
 });
 
 export async function GET(request: NextRequest) {
   try {
+    if (!process.env.DATABASE_URL) {
+      return NextResponse.json(
+        { error: 'Database not configured', message: 'DATABASE_URL is not set. Please add PostgreSQL service on Railway.' },
+        { status: 500 }
+      );
+    }
+
     const searchParams = request.nextUrl.searchParams;
 
     // Get filter parameters
@@ -107,9 +118,15 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({ insights });
   } catch (error) {
-    console.error('Error fetching insights:', error);
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('Error fetching insights:', errorMessage);
+
     return NextResponse.json(
-      { error: 'Failed to fetch insights', message: error instanceof Error ? error.message : 'Unknown error' },
+      {
+        error: 'Failed to fetch insights',
+        message: errorMessage,
+        hint: 'Make sure DATABASE_URL is set on Railway and PostgreSQL service is added'
+      },
       { status: 500 }
     );
   }

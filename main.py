@@ -189,16 +189,16 @@ def save_to_db(insights):
                     ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (id) DO UPDATE SET
                         updated_at = CURRENT_TIMESTAMP,
-                        data = EXCLUDED.data;
+                        data = EXCLUDED.data
+                    RETURNING id;
                 """, (
                     insight_id, content_type, ticker, exchange, published_at,
                     headline, body, severity, theme, topics, Json(insight)
                 ))
 
-                if cur.rowcount > 0:
+                result = cur.fetchone()
+                if result:
                     inserted_count += 1
-                else:
-                    updated_count += 1
 
             except Exception as e:
                 print(f"Error saving insight {insight_id}: {e}")
@@ -207,7 +207,7 @@ def save_to_db(insights):
         cur.close()
         conn.close()
 
-        print(f"Saved to database: {inserted_count} new, {updated_count} updated")
+        print(f"Saved to database: {inserted_count} insights")
 
     except Exception as e:
         print(f"Error saving insights to database: {e}")

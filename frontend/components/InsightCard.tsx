@@ -14,6 +14,7 @@ interface InsightCardProps {
     body?: string;
     severity?: string;
     theme?: string;
+    topics?: string[];
     detail?: any;
   };
 }

@@ -1,0 +1,18 @@
+{
+  "name": "ortex-insights",
+  "version": "1.0.0",
+  "description": "Ortex market intelligence insights viewer",
+  "main": "main.py",
+  "scripts": {
+    "start": "cd frontend && npm start",
+    "dev": "cd frontend && npm run dev",
+    "build": "cd frontend && npm run build",
+    "backend": "python main.py"
+  },
+  "keywords": ["ortex", "insights", "market"],
+  "author": "Raghav Kapoor",
+  "license": "MIT",
+  "engines": {
+    "node": "18.x"
+  }
+}

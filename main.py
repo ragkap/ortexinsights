@@ -67,16 +67,31 @@ def init_db():
         raise
 
 
-def fetch_ortex_insights(params=None):
+def fetch_ortex_insights(params=None, minutes_back=None):
     """Fetch insights from Ortex API.
 
     Args:
         params: Dict of query parameters to filter results.
+        minutes_back: Only fetch insights published in the last X minutes.
+                     If None, uses POLL_INTERVAL_MINUTES.
     """
     try:
         query_params = DEFAULT_PARAMS.copy()
         if params:
             query_params.update(params)
+
+        # If minutes_back not specified, use polling interval
+        if minutes_back is None:
+            minutes_back = POLL_INTERVAL_MINUTES
+
+        # Calculate cutoff time (go back a bit extra to avoid missing edge cases)
+        cutoff_time = datetime.utcnow() - timedelta(minutes=minutes_back + 2)
+        cutoff_iso = cutoff_time.isoformat() + "Z"
+
+        # Add publishedAfter filter to only get recent insights
+        query_params["publishedAfter"] = cutoff_iso
+
+        print(f"Fetching insights published after: {cutoff_iso}")
 
         response = requests.get(
             ORTEX_API_URL,
@@ -225,8 +240,8 @@ def main(custom_params=None):
     # Initialize database
     init_db()
 
-    # Fetch insights
-    insights = fetch_ortex_insights(custom_params)
+    # Fetch insights published in the last POLL_INTERVAL_MINUTES
+    insights = fetch_ortex_insights(custom_params, minutes_back=POLL_INTERVAL_MINUTES)
     if insights:
         print(f"Fetched insights successfully")
         enriched = enrich_insights(insights, max_details=20)
